@@ -2,6 +2,7 @@ package com.tianji.trade.service.impl;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.tianji.api.cache.RoleCache;
 import com.tianji.api.client.user.UserClient;
 import com.tianji.api.dto.trade.OrderBasicDTO;
@@ -39,6 +40,7 @@ import com.tianji.trade.service.IOrderDetailService;
 import com.tianji.trade.service.IRefundApplyService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -68,6 +70,7 @@ public class RefundApplyServiceImpl extends ServiceImpl<RefundApplyMapper, Refun
     private final RoleCache roleCache;
     private final ThreadPoolTaskExecutor sendRefundRequestExecutor;
     private final RabbitMqHelper rabbitMqHelper;
+    private final ObjectProvider<IRefundApplyService> refundApplyServiceProvider;
 
     @Override
     public List<RefundApply> queryByDetailId(Long id) {
@@ -402,12 +405,28 @@ public class RefundApplyServiceImpl extends ServiceImpl<RefundApplyMapper, Refun
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public void handleRefundResult(RefundResultDTO result) {
+        if (result == null || result.getBizRefundOrderId() == null
+                || (result.getStatus() != RefundResultDTO.RUNNING
+                && result.getStatus() != RefundResultDTO.SUCCESS && result.getStatus() != RefundResultDTO.FAILED)) {
+            throw new BadRequestException("退款结果通知数据无效");
+        }
         // 1.查询退款申请记录
         RefundApply refundApply = getById(result.getBizRefundOrderId());
         if (refundApply == null) {
-            return;
+            throw new BizIllegalException(TradeErrorInfo.REFUND_NOT_EXISTS);
+        }
+        if (!AGREE.equalsValue(refundApply.getStatus())) {
+            // 已成功不能被迟到失败/处理中通知覆盖；相互矛盾的终态需要人工核实。
+            if (RefundStatus.FAILED.equalsValue(refundApply.getStatus()) && result.getStatus() == RefundResultDTO.SUCCESS) {
+                throw new BizIllegalException("已失败的退款申请收到成功通知，需要对账处理");
+            }
+            if (RefundStatus.SUCCESS.equalsValue(refundApply.getStatus()) || RefundStatus.FAILED.equalsValue(refundApply.getStatus())) {
+                return;
+            }
+            // 异步请求可能先于审批事务提交，不能把尚未进入 AGREE 的消息当成重复吞掉。
+            throw new BizIllegalException("退款申请尚未获准或状态不允许退款，请重试并核实");
         }
         UserContext.setUser(refundApply.getApprover());
         // 2.判断结果，支付宝支付有可能直接返回退款成功结果，微信只会返回退款中
@@ -419,7 +438,9 @@ public class RefundApplyServiceImpl extends ServiceImpl<RefundApplyMapper, Refun
         int status = result.getStatus();
         if(status == RefundResultDTO.RUNNING){
             // 退款中，结果未知，将其它数据写入数据库即可
-            updateById(r);
+            update(r, Wrappers.<RefundApply>lambdaUpdate()
+                    .eq(RefundApply::getId, r.getId())
+                    .eq(RefundApply::getStatus, AGREE.getValue()));
             return;
         }
 
@@ -437,7 +458,13 @@ public class RefundApplyServiceImpl extends ServiceImpl<RefundApplyMapper, Refun
 
         // 2.4.更新数据库
         r.setFinishTime(LocalDateTime.now());
-        updateById(r);
+        boolean updated = update(r, Wrappers.<RefundApply>lambdaUpdate()
+                .eq(RefundApply::getId, r.getId())
+                .eq(RefundApply::getStatus, AGREE.getValue()));
+        if (!updated) {
+            // 不在同一事务的旧快照中判断冲突是否为重复，重试时重新读取终态。
+            throw new BizIllegalException("退款处理遇到并发状态变更，请重试并核实退款状态");
+        }
 
         // 3.更新子订单状态
         detailService.updateRefundStatusById(refundApply.getOrderDetailId(), r.getStatus());
@@ -446,6 +473,9 @@ public class RefundApplyServiceImpl extends ServiceImpl<RefundApplyMapper, Refun
         if (status == RefundResultDTO.SUCCESS) {
             // 4.1.查询子订单信息
             OrderDetail detail = detailService.getById(refundApply.getOrderDetailId());
+            if (detail == null) {
+                throw new DbException("退款订单明细不存在");
+            }
             // 4.2.发送MQ消息，通知报名成功
             rabbitMqHelper.send(
                     MqConstants.Exchange.ORDER_EXCHANGE,
@@ -504,6 +534,7 @@ public class RefundApplyServiceImpl extends ServiceImpl<RefundApplyMapper, Refun
     }
 
     private void sendRefundRequestAsync(RefundApply refundApply) {
-        sendRefundRequestExecutor.execute(() -> this.sendRefundRequest(refundApply));
+        // 通过 Spring 代理调用，保证异步退款入口也启用数据库事务。
+        sendRefundRequestExecutor.execute(() -> refundApplyServiceProvider.getObject().sendRefundRequest(refundApply));
     }
 }

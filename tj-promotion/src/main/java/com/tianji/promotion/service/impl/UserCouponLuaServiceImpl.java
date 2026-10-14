@@ -91,6 +91,7 @@ public class UserCouponLuaServiceImpl extends ServiceImpl<UserCouponMapper, User
         UserCouponDTO userCouponDTO = new UserCouponDTO();
         userCouponDTO.setUserId(userId);
         userCouponDTO.setCouponId(couponId);
+        userCouponDTO.setReceiveRequestId(java.util.UUID.randomUUID().toString());
         rabbitMqHelper.send(MqConstants.Exchange.PROMOTION_EXCHANGE, MqConstants.Key.COUPON_RECEIVE_KEY, userCouponDTO);
     }
 
@@ -192,11 +193,16 @@ public class UserCouponLuaServiceImpl extends ServiceImpl<UserCouponMapper, User
 
         // 4.更新兑换码状态
         if (uc.getSerialNum() != null) {
-            codeService.lambdaUpdate()
+            boolean updated = codeService.lambdaUpdate()
                     .set(ExchangeCode::getUserId, uc.getUserId())
                     .set(ExchangeCode::getStatus, ExchangeCodeStatus.USED)
                     .eq(ExchangeCode::getId, uc.getSerialNum())
+                    .eq(ExchangeCode::getStatus, ExchangeCodeStatus.UNUSED)
+                    .eq(ExchangeCode::getExchangeTargetId, uc.getCouponId())
                     .update();
+            if (!updated) {
+                throw new BizIllegalException("兑换码不存在或已使用，发券事务回滚");
+            }
         }
     }
 
@@ -308,6 +314,8 @@ public class UserCouponLuaServiceImpl extends ServiceImpl<UserCouponMapper, User
         uc.setTermBeginTime(termBeginTime);
         uc.setTermEndTime(termEndTime);
         // 3.保存
-        save(uc);
+        if (!save(uc)) {
+            throw new DbException("用户优惠券保存失败");
+        }
     }
 }

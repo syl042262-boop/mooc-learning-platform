@@ -12,6 +12,7 @@ import com.tianji.api.dto.user.UserDTO;
 import com.tianji.common.constants.ErrorInfo;
 import com.tianji.common.domain.dto.PageDTO;
 import com.tianji.common.exceptions.BadRequestException;
+import com.tianji.common.exceptions.DbException;
 import com.tianji.common.utils.*;
 import com.tianji.pay.sdk.client.PayClient;
 import com.tianji.pay.sdk.constants.PayChannel;
@@ -250,12 +251,17 @@ public class OrderDetailServiceImpl extends ServiceImpl<OrderDetailMapper, Order
     @Override
     public void markDetailSuccessByOrderId(Long id, String payChannel, LocalDateTime successTime) {
         List<OrderDetail> details = queryByOrderId(id);
+        if (CollUtils.isEmpty(details)) {
+            throw new DbException("支付订单缺少明细");
+        }
         for (OrderDetail detail : details) {
             detail.setStatus(PAYED.getValue());
             detail.setPayChannel(payChannel);
             detail.setCourseExpireTime(successTime.plusMinutes(detail.getValidDuration()));
         }
-        updateBatchById(details);
+        if (!updateBatchById(details)) {
+            throw new DbException("支付订单明细更新失败");
+        }
     }
 
     @Override

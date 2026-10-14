@@ -17,6 +17,7 @@ import com.tianji.common.domain.dto.PageDTO;
 import com.tianji.common.domain.query.PageQuery;
 import com.tianji.common.exceptions.BadRequestException;
 import com.tianji.common.exceptions.BizIllegalException;
+import com.tianji.common.exceptions.DbException;
 import com.tianji.common.utils.CollUtils;
 import com.tianji.common.utils.DateUtils;
 import com.tianji.common.utils.UserContext;
@@ -75,11 +76,13 @@ public class LearningLessonServiceImpl extends ServiceImpl<LearningLessonMapper,
 
         // 根据 courseIds 批量查询 课程简单信息
         List<CourseSimpleInfoDTO> clientSimpleInfoList = courseClient.getSimpleInfoList(courseIds);
-        // 健壮性判断，如果查询结果为空，直接返回
-        if (CollUtil.isEmpty(clientSimpleInfoList)) {
-            // 课程不存在，无法添加
-            log.error("课程信息不存在，无法添加到课表");
-            return;
+        // 查询失败或结果不全必须让消费事务回滚，不能将部分加课标记为成功。
+        if (CollUtil.isEmpty(clientSimpleInfoList)
+                || clientSimpleInfoList.stream().anyMatch(c -> c == null || c.getId() == null)
+                || !clientSimpleInfoList.stream().map(CourseSimpleInfoDTO::getId).collect(Collectors.toSet())
+                .equals(new java.util.HashSet<>(courseIds))
+                || clientSimpleInfoList.size() != courseIds.size()) {
+            throw new BizIllegalException("课程信息查询不完整，无法添加到课表");
         }
         // 遍历课程信息，添加到课表中
         List<LearningLesson> lessonList = new ArrayList<>();
@@ -103,7 +106,9 @@ public class LearningLessonServiceImpl extends ServiceImpl<LearningLessonMapper,
         }
 
         // 批量保存
-        saveBatch(lessonList);
+        if (!saveBatch(lessonList)) {
+            throw new DbException("课表保存失败");
+        }
     }
 
     @Override

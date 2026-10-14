@@ -5,6 +5,10 @@ import lombok.Data;
 @Data
 public class UserCouponDTO {
     /**
+     * 同一次普通领券请求的唯一标识，发布重试必须沿用此值。
+     */
+    private String receiveRequestId;
+    /**
      * 用户id
      */
     private Long userId;

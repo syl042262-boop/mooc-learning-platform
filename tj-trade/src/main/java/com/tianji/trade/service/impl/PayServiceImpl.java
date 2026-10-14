@@ -29,6 +29,7 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.stream.Collectors;
 
 import static com.tianji.common.constants.MqConstants.Exchange.TRADE_DELAY_EXCHANGE;
@@ -96,14 +97,22 @@ public class PayServiceImpl implements IPayService {
     }
 
     private void sendDelayQueryMessage(OrderDelayQueryDTO message) {
+        // 不修改接收到的消息对象，否则本地重试会跳过原来的延迟轮次。
+        OrderDelayQueryDTO next = new OrderDelayQueryDTO();
+        next.setOrderId(message.getOrderId());
+        next.setDelayMillis(new ArrayList<>(message.getDelayMillis()));
         mqHelper.sendDelayMessage(
                 TRADE_DELAY_EXCHANGE,
                 ORDER_DELAY_KEY,
-                message, Duration.ofMillis(message.removeFirst()));
+                next, Duration.ofMillis(next.removeFirst()));
     }
 
     @Override
     public void queryPayResult(OrderDelayQueryDTO message) {
+        if (message == null || message.getOrderId() == null || message.getDelayMillis() == null
+                || message.getDelayMillis().stream().anyMatch(delay -> delay == null || delay <= 0)) {
+            throw new BadRequestException("订单延迟查询消息数据无效");
+        }
         // 1.获取订单信息
         Long orderId = message.getOrderId();
         Order order = orderService.getById(orderId);
@@ -118,6 +127,9 @@ public class PayServiceImpl implements IPayService {
         }
         // 3.查询支付状态
         PayResultDTO payResult = payClient.queryPayResult(orderId);
+        if (payResult == null) {
+            throw new BizIllegalException("支付结果查询失败");
+        }
         int status = payResult.getStatus();
         if(PayResultDTO.SUCCESS != status){
             // 3.1.支付中或支付失败，需要重试查询
@@ -127,6 +139,7 @@ public class PayServiceImpl implements IPayService {
             }
             // 发送延迟查询消息，再次查询支付状态
             sendDelayQueryMessage(message);
+            return;
         }
         // 3.2.支付成功
         orderService.handlePaySuccess(payResult);

@@ -2,6 +2,7 @@ package com.tianji.trade.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.tianji.api.client.course.CourseClient;
@@ -422,11 +423,22 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public void handlePaySuccess(PayResultDTO payResult) {
+        if (payResult == null || payResult.getStatus() != PayResultDTO.SUCCESS
+                || payResult.getBizOrderId() == null || payResult.getPayOrderNo() == null
+                || payResult.getSuccessTime() == null) {
+            throw new BadRequestException("支付成功通知数据无效");
+        }
         // 1.查询订单
         Order order = getById(payResult.getBizOrderId());
         if (order == null) {
+            throw new BizIllegalException(ORDER_NOT_EXISTS);
+        }
+        if (OrderStatus.CLOSED.equalsValue(order.getStatus())) {
+            throw new BizIllegalException("已关闭订单收到支付成功通知，需要对账处理");
+        }
+        if (!OrderStatus.NO_PAY.equalsValue(order.getStatus())) {
             return;
         }
         // 2.更新订单状态
@@ -437,11 +449,22 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
         o.setPayChannel(payResult.getPayChannel());
         o.setPayOrderNo(payResult.getPayOrderNo());
         o.setMessage("用户支付成功");
-        updateById(o);
+        // 状态作为乐观锁条件，只有一个消费者能把待支付订单变成已支付。
+        boolean updated = update(o, Wrappers.<Order>lambdaUpdate()
+                .eq(Order::getId, order.getId())
+                .eq(Order::getStatus, OrderStatus.NO_PAY.getValue()));
+        if (!updated) {
+            // MySQL REPEATABLE READ 下普通查询可能仍读到旧快照，不能据此把冲突当作成功。
+            // 抛出异常退出事务，重试会在新事务中重新识别已支付/已关闭状态。
+            throw new BizIllegalException("支付处理遇到并发状态变更，请重试并核实订单状态");
+        }
         // 3.更新订单条目
         detailService.markDetailSuccessByOrderId(o.getId(), payResult.getPayChannel(), payResult.getSuccessTime());
         // 4.查询订单包含的课程信息
         List<Long> cIds = detailService.queryCourseIdsByOrderId(o.getId());
+        if (CollUtils.isEmpty(cIds)) {
+            throw new DbException("支付订单缺少课程明细");
+        }
         // 5.发送MQ消息，通知报名成功
         rabbitMqHelper.send(
                 MqConstants.Exchange.ORDER_EXCHANGE,
