@@ -3,6 +3,9 @@ server:
   tomcat:
     uri-encoding: UTF-8   #服务编码
 spring:
+  rabbitmq:
+    publisher-confirm-type: correlated
+    publisher-returns: true
   profiles:
     active: dev
   application:

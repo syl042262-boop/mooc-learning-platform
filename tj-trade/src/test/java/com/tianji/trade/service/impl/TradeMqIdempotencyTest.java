@@ -6,7 +6,11 @@ import com.tianji.api.cache.RoleCache;
 import com.tianji.api.client.course.CourseClient;
 import com.tianji.api.client.promotion.PromotionClient;
 import com.tianji.api.client.user.UserClient;
-import com.tianji.common.autoconfigure.mq.RabbitMqHelper;
+import com.tianji.common.autoconfigure.mq.outbox.OutboxService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import com.tianji.common.exceptions.BadRequestException;
 import com.tianji.common.exceptions.BizIllegalException;
 import com.tianji.common.utils.UserContext;
@@ -61,16 +65,20 @@ class TradeMqIdempotencyTest {
     private OrderServiceImpl orders;
     private RefundApplyServiceImpl refunds;
     private IOrderDetailService details;
-    private RabbitMqHelper mq;
+    private OutboxService mq;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         context = new AnnotationConfigApplicationContext(TestConfiguration.class);
         jdbc = context.getBean(JdbcTemplate.class);
         orders = context.getBean(OrderServiceImpl.class);
         refunds = context.getBean(RefundApplyServiceImpl.class);
         details = context.getBean(IOrderDetailService.class);
-        mq = context.getBean(RabbitMqHelper.class);
+        mq = context.getBean(OutboxService.class);
+        String ddl = Files.readString(Path.of("..", "docs", "sql", "mq-outbox.sql"))
+                .replace("CHARACTER SET ascii COLLATE ascii_bin", "")
+                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", "");
+        for (String sql : ddl.split(";")) if (!sql.trim().isEmpty()) jdbc.execute(sql);
         jdbc.execute("CREATE TABLE `order` (id BIGINT PRIMARY KEY, pay_order_no BIGINT, user_id BIGINT, status INT, " +
                 "message VARCHAR(255), total_amount INT, real_amount INT, discount_amount INT, pay_channel VARCHAR(50), " +
                 "coupon_ids VARCHAR(1024), create_time TIMESTAMP, pay_time TIMESTAMP, close_time TIMESTAMP, " +
@@ -106,7 +114,7 @@ class TradeMqIdempotencyTest {
         orders.handlePaySuccess(payment());
         assertEquals(OrderStatus.PAYED.getValue(), orderStatus());
         verify(details, times(1)).markDetailSuccessByOrderId(eq(1L), anyString(), any());
-        verify(mq, times(1)).send(anyString(), anyString(), any());
+        verify(mq, times(1)).record(anyString(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -114,7 +122,7 @@ class TradeMqIdempotencyTest {
         concurrently(() -> orders.handlePaySuccess(payment()));
         assertEquals(OrderStatus.PAYED.getValue(), orderStatus());
         verify(details, times(1)).markDetailSuccessByOrderId(eq(1L), anyString(), any());
-        verify(mq, times(1)).send(anyString(), anyString(), any());
+        verify(mq, times(1)).record(anyString(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -127,7 +135,7 @@ class TradeMqIdempotencyTest {
         doNothing().when(details).markDetailSuccessByOrderId(anyLong(), anyString(), any());
         orders.handlePaySuccess(payment());
         assertEquals(OrderStatus.PAYED.getValue(), orderStatus());
-        verify(mq).send(anyString(), anyString(), any());
+        verify(mq).record(anyString(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -165,7 +173,7 @@ class TradeMqIdempotencyTest {
         assertEquals(RefundStatus.SUCCESS.getValue(), refundStatus());
         assertEquals(finish, jdbc.queryForObject("SELECT finish_time FROM refund_apply WHERE id = 1", LocalDateTime.class));
         assertEquals(RefundStatus.SUCCESS.getValue(), jdbc.queryForObject("SELECT refund_status FROM detail_result", Integer.class));
-        verify(mq, times(1)).send(anyString(), anyString(), any());
+        verify(mq, times(1)).record(anyString(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -173,12 +181,12 @@ class TradeMqIdempotencyTest {
         concurrently(() -> refunds.handleRefundResult(refund(RefundResultDTO.SUCCESS)));
         assertEquals(RefundStatus.SUCCESS.getValue(), refundStatus());
         verify(details, times(1)).updateRefundStatusById(42L, RefundStatus.SUCCESS.getValue());
-        verify(mq, times(1)).send(anyString(), anyString(), any());
+        verify(mq, times(1)).record(anyString(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
-    void refundSendExceptionRollsBackBothRefundAndDetailState() {
-        doThrow(new IllegalStateException("模拟发送异常")).when(mq).send(anyString(), anyString(), any());
+    void refundOutboxExceptionRollsBackBothRefundAndDetailState() {
+        doThrow(new IllegalStateException("模拟 Outbox 落库异常")).when(mq).record(anyString(), anyString(), anyString(), anyString(), any());
         assertThrows(IllegalStateException.class, () -> refunds.handleRefundResult(refund(RefundResultDTO.SUCCESS)));
         assertEquals(RefundStatus.AGREE.getValue(), refundStatus());
         assertEquals(RefundStatus.AGREE.getValue(), jdbc.queryForObject("SELECT refund_status FROM detail_result", Integer.class));
@@ -201,7 +209,7 @@ class TradeMqIdempotencyTest {
         jdbc.update("UPDATE refund_apply SET status = 3 WHERE id = 1");
         refunds.handleRefundResult(refund(RefundResultDTO.SUCCESS));
         assertEquals(RefundStatus.SUCCESS.getValue(), refundStatus());
-        verify(mq).send(anyString(), anyString(), any());
+        verify(mq).record(anyString(), anyString(), anyString(), anyString(), any());
     }
 
     private int orderStatus() {
@@ -300,18 +308,19 @@ class TradeMqIdempotencyTest {
         }
 
         @Bean
-        RabbitMqHelper rabbitMqHelper() {
-            return mock(RabbitMqHelper.class);
+        OutboxService outboxService(JdbcTemplate jdbc) {
+            ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+            return spy(new OutboxService(jdbc, new Jackson2JsonMessageConverter(mapper), mapper));
         }
 
         @Bean
-        OrderServiceImpl orderService(IOrderDetailService details, RabbitMqHelper mq) {
+        OrderServiceImpl orderService(IOrderDetailService details, OutboxService mq) {
             return new OrderServiceImpl(mock(CourseClient.class), mock(PromotionClient.class), details,
                     mock(ICartService.class), new TradeProperties(), mq);
         }
 
         @Bean
-        RefundApplyServiceImpl refundService(OrderMapper mapper, IOrderDetailService details, RabbitMqHelper mq,
+        RefundApplyServiceImpl refundService(OrderMapper mapper, IOrderDetailService details, OutboxService mq,
                                              ObjectProvider<IRefundApplyService> provider) {
             return new RefundApplyServiceImpl(mapper, details, mock(UserClient.class), mock(PayClient.class),
                     mock(RoleCache.class), mock(ThreadPoolTaskExecutor.class), mq, provider);

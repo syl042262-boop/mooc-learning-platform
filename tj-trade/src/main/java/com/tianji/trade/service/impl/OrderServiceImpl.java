@@ -13,7 +13,7 @@ import com.tianji.api.dto.promotion.CouponDiscountDTO;
 import com.tianji.api.dto.promotion.OrderCouponDTO;
 import com.tianji.api.dto.promotion.OrderCourseDTO;
 import com.tianji.api.dto.trade.OrderBasicDTO;
-import com.tianji.common.autoconfigure.mq.RabbitMqHelper;
+import com.tianji.common.autoconfigure.mq.outbox.OutboxService;
 import com.tianji.common.constants.MqConstants;
 import com.tianji.common.domain.dto.PageDTO;
 import com.tianji.common.exceptions.BadRequestException;
@@ -72,7 +72,7 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
     private final IOrderDetailService detailService;
     private final ICartService cartService;
     private final TradeProperties tradeProperties;
-    private final RabbitMqHelper rabbitMqHelper;
+    private final OutboxService outboxService;
 
     @Override
     @GlobalTransactional
@@ -196,7 +196,7 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
         saveOrderAndDetails(order, CollUtils.singletonList(detail));
 
         // 5.发送MQ消息，通知报名成功
-        rabbitMqHelper.send(
+        outboxService.record("ORDER_ENROLLED", "order:" + orderId,
                 MqConstants.Exchange.ORDER_EXCHANGE,
                 MqConstants.Key.ORDER_PAY_KEY,
                 OrderBasicDTO.builder()
@@ -466,7 +466,7 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
             throw new DbException("支付订单缺少课程明细");
         }
         // 5.发送MQ消息，通知报名成功
-        rabbitMqHelper.send(
+        outboxService.record("ORDER_ENROLLED", "order:" + o.getId(),
                 MqConstants.Exchange.ORDER_EXCHANGE,
                 MqConstants.Key.ORDER_PAY_KEY,
                 OrderBasicDTO.builder()

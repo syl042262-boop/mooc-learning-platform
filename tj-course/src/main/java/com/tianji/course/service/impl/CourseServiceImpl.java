@@ -13,7 +13,7 @@ import com.tianji.api.dto.course.*;
 import com.tianji.api.dto.leanring.LearningLessonDTO;
 import com.tianji.api.dto.leanring.LearningRecordDTO;
 import com.tianji.api.dto.user.UserDTO;
-import com.tianji.common.autoconfigure.mq.RabbitMqHelper;
+import com.tianji.common.autoconfigure.mq.outbox.OutboxService;
 import com.tianji.common.constants.ErrorInfo;
 import com.tianji.common.constants.MqConstants;
 import com.tianji.common.domain.dto.PageDTO;
@@ -67,7 +67,7 @@ public class CourseServiceImpl extends ServiceImpl<CourseMapper, Course> impleme
     private ICourseDraftService courseDraftService;
 
     @Autowired
-    private RabbitMqHelper rabbitMqHelper;
+    private OutboxService outboxService;
 
     @Autowired
     private ICourseCatalogueService courseCatalogueService;
@@ -155,11 +155,17 @@ public class CourseServiceImpl extends ServiceImpl<CourseMapper, Course> impleme
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
+        if (courseDraftService.getById(id) == null) {
+            return;
+        }
+        long eventVersion = outboxService.nextVersion("course:" + id);
         //1.删除草稿信息
         courseDraftService.delete(id);
         //2.发送删除草稿mq
-        rabbitMqHelper.send(MqConstants.Exchange.COURSE_EXCHANGE, MqConstants.Key.COURSE_DELETE_KEY, id);
+        outboxService.record("COURSE_DELETE", "course:" + id + ":version:" + eventVersion,
+                MqConstants.Exchange.COURSE_EXCHANGE, MqConstants.Key.COURSE_DELETE_KEY, id);
     }
 
     @Override
@@ -356,25 +362,27 @@ public class CourseServiceImpl extends ServiceImpl<CourseMapper, Course> impleme
             return 0;
         }
         //2.组装数据
-        List<Course> updateCourses = new ArrayList<>();
+        int finished = 0;
         for (Course course : courses) {
+            long eventVersion = outboxService.nextVersion("course:" + course.getId());
             Course updateCourse = new Course();
             //2.1.设置课程id
             updateCourse.setId(course.getId());
             //2.2.设置课程状态-已完结
             updateCourse.setStatus(CourseStatus.FINISHED.getStatus());
-            updateCourses.add(updateCourse);
-        }
-        //3.批量完结课程
-        updateBatchById(updateCourses);
-        //4.发送课程完结mq
-        sendFinishedCourse(courses);
-        //5.清理草稿
-        for (Course course: courses){
+            boolean changed = update(updateCourse, Wrappers.<Course>lambdaUpdate()
+                    .eq(Course::getId, course.getId())
+                    .eq(Course::getStatus, course.getStatus())
+                    .le(Course::getPurchaseEndTime, LocalDateTime.now()));
+            if (!changed) {
+                throw new DbException("课程完结遇到并发状态变更，请重试");
+            }
             courseDraftService.delete(course.getId());
+            outboxService.record("COURSE_FINISHED", "course:" + course.getId() + ":version:" + eventVersion,
+                    MqConstants.Exchange.COURSE_EXCHANGE, MqConstants.Key.COURSE_EXPIRE_KEY, course.getId());
+            finished++;
         }
-
-        return updateCourses.size();
+        return finished;
     }
 
     @Override
@@ -513,20 +521,6 @@ public class CourseServiceImpl extends ServiceImpl<CourseMapper, Course> impleme
             //5.5.设置课程小节数
             coursePageVO.setSections(course.getSectionNum());
         });
-    }
-
-    /**
-     * 异步发送课程完结mq
-     *
-     * @param finishedCourse
-     */
-    private void sendFinishedCourse(List<Course> finishedCourse) {
-        //1.遍历发送课程完结mq
-        for (Course course : finishedCourse) {
-            rabbitMqHelper.sendAsync(MqConstants.Exchange.COURSE_EXCHANGE,
-                    MqConstants.Key.COURSE_EXPIRE_KEY,
-                    course.getId());
-        }
     }
 
     /**

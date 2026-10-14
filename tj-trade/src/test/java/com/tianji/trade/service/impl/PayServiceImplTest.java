@@ -1,6 +1,6 @@
 package com.tianji.trade.service.impl;
 
-import com.tianji.common.autoconfigure.mq.RabbitMqHelper;
+import com.tianji.trade.service.PayQueryScheduler;
 import com.tianji.pay.sdk.client.PayClient;
 import com.tianji.pay.sdk.dto.PayResultDTO;
 import com.tianji.trade.config.TradeProperties;
@@ -11,9 +11,7 @@ import com.tianji.trade.service.IOrderDetailService;
 import com.tianji.trade.service.IOrderService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -26,14 +24,14 @@ class PayServiceImplTest {
 
     private PayClient payClient;
     private IOrderService orderService;
-    private RabbitMqHelper mq;
+    private PayQueryScheduler mq;
     private PayServiceImpl service;
 
     @BeforeEach
     void setUp() {
         payClient = mock(PayClient.class);
         orderService = mock(IOrderService.class);
-        mq = mock(RabbitMqHelper.class);
+        mq = mock(PayQueryScheduler.class);
         service = new PayServiceImpl(payClient, orderService, mock(IOrderDetailService.class), new TradeProperties(), mq);
         when(orderService.getById(1L)).thenReturn(new Order().setId(1L).setStatus(OrderStatus.NO_PAY.getValue()));
     }
@@ -47,12 +45,7 @@ class PayServiceImplTest {
         service.queryPayResult(message);
         verify(orderService, never()).handlePaySuccess(any());
         assertEquals(originalDelays, message.getDelayMillis());
-        ArgumentCaptor<OrderDelayQueryDTO> next = ArgumentCaptor.forClass(OrderDelayQueryDTO.class);
-        verify(mq, times(2)).sendDelayMessage(anyString(), anyString(), next.capture(), eq(Duration.ofSeconds(3)));
-        for (OrderDelayQueryDTO sent : next.getAllValues()) {
-            assertNotSame(message, sent);
-            assertEquals(originalDelays.subList(1, originalDelays.size()), sent.getDelayMillis());
-        }
+        verify(mq, times(2)).start(1L);
     }
 
     @Test
@@ -80,5 +73,40 @@ class PayServiceImplTest {
         service.queryPayResult(OrderDelayQueryDTO.init(1L));
         verifyNoInteractions(payClient, mq);
         verify(orderService, never()).handlePaySuccess(any());
+    }
+
+    @Test
+    void stalePersistentRoundDoesNotQueryOrScheduleAgain() {
+        OrderDelayQueryDTO message = persistentMessage();
+        when(mq.isCurrent(message)).thenReturn(false);
+        service.queryPayResult(message);
+        verifyNoInteractions(payClient, orderService);
+        verify(mq, never()).advance(any());
+    }
+
+    @Test
+    void currentPersistentPendingRoundAdvancesWithoutMutatingTheInput() {
+        OrderDelayQueryDTO message = persistentMessage();
+        when(mq.isCurrent(message)).thenReturn(true);
+        when(payClient.queryPayResult(1L)).thenReturn(PayResultDTO.builder().status(PayResultDTO.PAYING).build());
+        service.queryPayResult(message);
+        verify(mq).advance(message);
+        assertEquals(0, message.getQueryRound());
+        verify(orderService, never()).handlePaySuccess(any());
+    }
+
+    @Test
+    void invalidPersistentMetadataIsRejected() {
+        OrderDelayQueryDTO message = persistentMessage();
+        message.setQueryRound(null);
+        assertThrows(com.tianji.common.exceptions.BadRequestException.class, () -> service.queryPayResult(message));
+        verifyNoInteractions(mq, payClient);
+    }
+
+    private OrderDelayQueryDTO persistentMessage() {
+        OrderDelayQueryDTO message = OrderDelayQueryDTO.init(1L);
+        message.setQueryGeneration(1L);
+        message.setQueryRound(0);
+        return message;
     }
 }

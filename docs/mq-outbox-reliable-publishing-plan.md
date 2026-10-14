@@ -1,6 +1,6 @@
 # 五个微服务的本地消息表与定时补发方案
 
-本方案只针对课程、交易、学习、促销、点赞五个微服务。基于当前代码制定设计，尚未修改业务代码或执行数据库迁移。
+本方案只针对课程、交易、学习、促销、点赞五个微服务。当前已在课程、交易和点赞统计服务落地代码；部署 SQL 仍需人工执行，学习签到/积分和促销 Redis 预占保留文档中的未覆盖边界。
 
 ## 1. 目标与保证范围
 
@@ -95,7 +95,7 @@ public void handlePaySuccess(PayResultDTO result) {
 | 课程上架、下架、完结、删除 | `course:{courseId}:version:{eventVersion}`，事件类型区分操作 |
 | 普通领券请求 | `receive:{receiveRequestId}`，沿用一次合法请求的固定 ID |
 | 兑换领券请求 | `exchange:{serialNum}` |
-| 点赞快照 | 优先 `biz:{bizType}:{bizId}:version:{sourceVersion}`；版本尚未补全时只用持久化的本次批次 ID，保证发布重试去重，不能声称解决旧快照乱序 |
+| 点赞快照 | 优先 `biz:{bizType}:{bizId}:version:{sourceVersion}`；当前统计批次使用 `bizType + bizId/count` 的 SHA-256 业务键，保证相同快照重试去重，不能声称解决旧快照乱序 |
 | 查单的下一轮调度 | `query:{queryTaskId}:round:{round}`，同轮重复通知不能创建不同任务 |
 
 课程可多次上下架，不能只用 courseId 防重。现有 publishTimes 只反映发布次数，不能直接作为覆盖所有操作的版本。建议同事务递增专用事件版本，必要时放到独立序列表，删除课程后仍保留版本身份。
@@ -270,4 +270,4 @@ Outbox 的固定消息 ID 只解决同一事件的重发，不解决不同事件
 - 延迟轮次不会因重试跳轮、重复创建或每次发布重新延迟；调度积压只导致晚执行。
 - 长时间 MQ 不可用时任务持续保留，恢复后可清空积压；确认成功与下游业务完成能区分。
 
-本次只交付设计文档，没有执行上述实现测试，也没有对实际 MySQL、Redis 或 RabbitMQ 宣称验证通过。既有消费幂等实现与边界见 [消费幂等实施说明](mq-consumer-idempotency-implementation.md)。
+已实现代码通过 H2、Spring 事务、并发抢占和模拟 RabbitMQ 确认测试；未连接实际 MySQL、Redis 或 RabbitMQ。部署前必须执行真实环境验收，并按本文边界处理 Redis 预占/取数、积分双写和业务顺序模型。既有消费幂等实现与边界见 [消费幂等实施说明](mq-consumer-idempotency-implementation.md)。

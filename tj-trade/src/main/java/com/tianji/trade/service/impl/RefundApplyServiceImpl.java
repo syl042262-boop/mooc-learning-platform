@@ -7,7 +7,7 @@ import com.tianji.api.cache.RoleCache;
 import com.tianji.api.client.user.UserClient;
 import com.tianji.api.dto.trade.OrderBasicDTO;
 import com.tianji.api.dto.user.UserDTO;
-import com.tianji.common.autoconfigure.mq.RabbitMqHelper;
+import com.tianji.common.autoconfigure.mq.outbox.OutboxService;
 import com.tianji.common.constants.Constant;
 import com.tianji.common.constants.ErrorInfo;
 import com.tianji.common.constants.MqConstants;
@@ -69,7 +69,7 @@ public class RefundApplyServiceImpl extends ServiceImpl<RefundApplyMapper, Refun
     private final PayClient payClient;
     private final RoleCache roleCache;
     private final ThreadPoolTaskExecutor sendRefundRequestExecutor;
-    private final RabbitMqHelper rabbitMqHelper;
+    private final OutboxService outboxService;
     private final ObjectProvider<IRefundApplyService> refundApplyServiceProvider;
 
     @Override
@@ -477,7 +477,7 @@ public class RefundApplyServiceImpl extends ServiceImpl<RefundApplyMapper, Refun
                 throw new DbException("退款订单明细不存在");
             }
             // 4.2.发送MQ消息，通知报名成功
-            rabbitMqHelper.send(
+            outboxService.record("ORDER_REFUNDED", "refund:" + refundApply.getId(),
                     MqConstants.Exchange.ORDER_EXCHANGE,
                     MqConstants.Key.ORDER_REFUND_KEY,
                     OrderBasicDTO.builder()

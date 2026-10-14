@@ -13,7 +13,7 @@ import com.tianji.api.dto.course.CourseDTO;
 import com.tianji.api.dto.course.CoursePurchaseInfoDTO;
 import com.tianji.api.dto.exam.QuestionBizDTO;
 import com.tianji.api.dto.user.UserDTO;
-import com.tianji.common.autoconfigure.mq.RabbitMqHelper;
+import com.tianji.common.autoconfigure.mq.outbox.OutboxService;
 import com.tianji.common.constants.ErrorInfo;
 import com.tianji.common.constants.MqConstants;
 import com.tianji.common.domain.dto.PageDTO;
@@ -94,7 +94,7 @@ public class CourseDraftServiceImpl extends ServiceImpl<CourseDraftMapper, Cours
     private ICategoryService categoryService;
 
     @Autowired
-    private RabbitMqHelper rabbitMqHelper;
+    private OutboxService outboxService;
 
     @Autowired
     private TradeClient tradeClient;
@@ -323,6 +323,7 @@ public class CourseDraftServiceImpl extends ServiceImpl<CourseDraftMapper, Cours
     @Override
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = {DbException.class, Exception.class})
     public void upShelf(Long id) {
+        long eventVersion = outboxService.nextVersion("course:" + id);
         // 1.信息获取
         //1.1获取上架的课程草稿信息
         CourseDraft courseDraft = baseMapper.selectById(id);
@@ -404,7 +405,8 @@ public class CourseDraftServiceImpl extends ServiceImpl<CourseDraftMapper, Cours
 
         }
         //5.课程上架mq
-        rabbitMqHelper.send(MqConstants.Exchange.COURSE_EXCHANGE, MqConstants.Key.COURSE_UP_KEY, id);
+        outboxService.record("COURSE_UP", "course:" + id + ":version:" + eventVersion,
+                MqConstants.Exchange.COURSE_EXCHANGE, MqConstants.Key.COURSE_UP_KEY, id);
     }
 
     @Override
@@ -452,6 +454,7 @@ public class CourseDraftServiceImpl extends ServiceImpl<CourseDraftMapper, Cours
     @Override
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = {DbException.class, Exception.class})
     public void downShelf(Long id) {
+        long eventVersion = outboxService.nextVersion("course:" + id);
         //1.查询课程基本信息
         Course course = courseService.getById(id);
         //1.1课程状态判断
@@ -471,7 +474,8 @@ public class CourseDraftServiceImpl extends ServiceImpl<CourseDraftMapper, Cours
         //7.课程老师copy到草稿中
         courseTeacherDraftMapper.insertFromCourseTeacher(id);
         //8.下架mq广播
-        rabbitMqHelper.send(MqConstants.Exchange.COURSE_EXCHANGE, MqConstants.Key.COURSE_DOWN_KEY, id);
+        outboxService.record("COURSE_DOWN", "course:" + id + ":version:" + eventVersion,
+                MqConstants.Exchange.COURSE_EXCHANGE, MqConstants.Key.COURSE_DOWN_KEY, id);
     }
 
     @GlobalTransactional

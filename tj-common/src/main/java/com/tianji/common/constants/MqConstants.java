@@ -21,6 +21,8 @@ public interface MqConstants {
         String PAY_EXCHANGE = "pay.topic";
         /*交易服务延迟任务交换机*/
         String TRADE_DELAY_EXCHANGE = "trade.delay.topic";
+        /* 本地持久化延迟任务到期后投递的普通交换机 */
+        String TRADE_QUERY_EXCHANGE = "trade.query.topic";
 
          /*点赞记录有关的交换机*/
         String LIKE_RECORD_EXCHANGE = "like.record.topic";

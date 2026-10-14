@@ -1,6 +1,5 @@
 package com.tianji.trade.service.impl;
 
-import com.tianji.common.autoconfigure.mq.RabbitMqHelper;
 import com.tianji.common.exceptions.BadRequestException;
 import com.tianji.common.exceptions.BizIllegalException;
 import com.tianji.common.utils.AssertUtils;
@@ -22,18 +21,15 @@ import com.tianji.trade.domain.vo.PayChannelVO;
 import com.tianji.trade.service.IOrderDetailService;
 import com.tianji.trade.service.IOrderService;
 import com.tianji.trade.service.IPayService;
+import com.tianji.trade.service.PayQueryScheduler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.ArrayList;
 import java.util.stream.Collectors;
 
-import static com.tianji.common.constants.MqConstants.Exchange.TRADE_DELAY_EXCHANGE;
-import static com.tianji.common.constants.MqConstants.Key.ORDER_DELAY_KEY;
 import static com.tianji.trade.constants.TradeErrorInfo.ORDER_NOT_EXISTS;
 
 @Slf4j
@@ -45,7 +41,7 @@ public class PayServiceImpl implements IPayService {
     private final IOrderService orderService;
     private final IOrderDetailService detailService;
     private final TradeProperties tradeProperties;
-    private final RabbitMqHelper mqHelper;
+    private final PayQueryScheduler queryScheduler;
 
     @Override
     public List<PayChannelVO> queryPayChannels() {
@@ -92,37 +88,40 @@ public class PayServiceImpl implements IPayService {
                 .build();
         String url = payClient.applyPayOrder(payApplyDTO);
         // 6.通过延迟队列，异步查询支付结果
-        sendDelayQueryMessage(OrderDelayQueryDTO.init(orderId));
+        queryScheduler.start(orderId);
         return url;
-    }
-
-    private void sendDelayQueryMessage(OrderDelayQueryDTO message) {
-        // 不修改接收到的消息对象，否则本地重试会跳过原来的延迟轮次。
-        OrderDelayQueryDTO next = new OrderDelayQueryDTO();
-        next.setOrderId(message.getOrderId());
-        next.setDelayMillis(new ArrayList<>(message.getDelayMillis()));
-        mqHelper.sendDelayMessage(
-                TRADE_DELAY_EXCHANGE,
-                ORDER_DELAY_KEY,
-                next, Duration.ofMillis(next.removeFirst()));
     }
 
     @Override
     public void queryPayResult(OrderDelayQueryDTO message) {
-        if (message == null || message.getOrderId() == null || message.getDelayMillis() == null
-                || message.getDelayMillis().stream().anyMatch(delay -> delay == null || delay <= 0)) {
+        if (message == null || message.getOrderId() == null || message.getOrderId() <= 0
+                || message.getDelayMillis() == null
+                || message.getDelayMillis().stream().anyMatch(delay -> delay == null || delay <= 0)
+                || (message.getQueryGeneration() == null) != (message.getQueryRound() == null)
+                || (message.getQueryGeneration() != null && (message.getQueryGeneration() <= 0
+                || message.getQueryRound() < 0 || message.getQueryRound() >= 6))) {
             throw new BadRequestException("订单延迟查询消息数据无效");
+        }
+        boolean persistent = message.getQueryGeneration() != null;
+        if (persistent && !queryScheduler.isCurrent(message)) {
+            return;
         }
         // 1.获取订单信息
         Long orderId = message.getOrderId();
         Order order = orderService.getById(orderId);
         if (order == null) {
             log.error("要查询状态的订单：{}不存在", orderId);
+            if (persistent) {
+                queryScheduler.finish(message);
+            }
             return;
         }
         // 2.判断订单状态
         if (!OrderStatus.NO_PAY.equalsValue(order.getStatus())) {
             // 订单已经支付或关闭，任务结束
+            if (persistent) {
+                queryScheduler.finish(message);
+            }
             return;
         }
         // 3.查询支付状态
@@ -132,16 +131,24 @@ public class PayServiceImpl implements IPayService {
         }
         int status = payResult.getStatus();
         if(PayResultDTO.SUCCESS != status){
+            if (persistent) {
+                queryScheduler.advance(message);
+                return;
+            }
             // 3.1.支付中或支付失败，需要重试查询
             if(message.getDelayMillis().size() == 0){
                 // 重试次数用尽，结束
                 return;
             }
             // 发送延迟查询消息，再次查询支付状态
-            sendDelayQueryMessage(message);
+            // 旧延迟消息接入持久化查询链，不再派生新的插件延迟消息。
+            queryScheduler.start(orderId);
             return;
         }
         // 3.2.支付成功
         orderService.handlePaySuccess(payResult);
+        if (persistent) {
+            queryScheduler.finish(message);
+        }
     }
 }

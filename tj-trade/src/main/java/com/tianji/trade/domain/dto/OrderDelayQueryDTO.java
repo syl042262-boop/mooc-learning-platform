@@ -14,6 +14,9 @@ public class OrderDelayQueryDTO {
      * 订单id
      */
     private Long orderId;
+    /** 新持久化查询链路的代次与轮次；均为空时是旧延迟消息。 */
+    private Long queryGeneration;
+    private Integer queryRound;
     /**
      * 延迟通知的间隔，默认是3秒、5秒、15秒、30秒、60秒、2分钟共6次延迟查询，中间成功后可以随时取消任务
      */

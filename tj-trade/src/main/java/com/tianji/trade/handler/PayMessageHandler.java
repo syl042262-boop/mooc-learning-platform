@@ -45,11 +45,15 @@ public class PayMessageHandler {
         refundApplyService.handleRefundResult(refundResult);
     }
 
-    @RabbitListener(bindings = @QueueBinding(
+    @RabbitListener(bindings = {@QueueBinding(
             value = @Queue(name = "trade.delay.order.query", durable = "true"),
             exchange = @Exchange(name = MqConstants.Exchange.TRADE_DELAY_EXCHANGE, delayed = "true", type = ExchangeTypes.TOPIC),
             key = MqConstants.Key.ORDER_DELAY_KEY
-    ))
+    ), @QueueBinding(
+            value = @Queue(name = "trade.delay.order.query", durable = "true"),
+            exchange = @Exchange(name = MqConstants.Exchange.TRADE_QUERY_EXCHANGE, type = ExchangeTypes.TOPIC),
+            key = MqConstants.Key.ORDER_DELAY_KEY
+    )})
     public void listenOrderDelayQueryMessage(OrderDelayQueryDTO message){
         log.debug("收到订单延迟查询通知：{}", message);
         payService.queryPayResult(message);
