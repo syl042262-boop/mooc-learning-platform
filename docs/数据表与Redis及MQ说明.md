@@ -4,6 +4,8 @@
 
 ## 数据表
 
+逐表字段、Java 类型及源码注释见 [数据表字段字典](数据表字段字典.md)。
+
 | 模块 | 表及用途 |
 | --- | --- |
 | 认证 | `account_role` 账号角色关联；`role` 角色；`role_menu` 角色菜单关联；`role_privilege` 角色权限关联；`privilege` 权限；`menu` 菜单；`login_record` 登录记录 |
