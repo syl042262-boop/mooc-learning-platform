@@ -66,3 +66,36 @@
 | `trade.query.topic`、`trade.delay.topic` | `delay.order.query` | `trade.delay.order.query` | 延迟支付查单；后者为旧延迟插件绑定 |
 
 部分课程、交易及点赞事件采用数据库 Outbox 和 broker confirm 实现补发；部分消费者有数据库幂等保护，覆盖范围并非全部链路。`course.delete` 在代码中有生产但未发现有效消费者；`reply.new` 未发现仓库内有效生产端。延迟交换机兼容绑定需要 RabbitMQ delayed-message 插件。详细链路、可靠性边界及源码入口见 [MQ 使用情况报告](mq-usage-report.md)。
+
+### 消息格式
+
+公共消息转换器使用 Jackson JSON。下表描述消息体，而非 AMQP 消息属性：`messageId`、内容类型和可能存在的类型头等属于消息属性，具体值取决于发送路径。示例仅展示结构，时间格式和空字段是否出现以实际序列化配置及发送端赋值为准。
+
+| 路由键 | 消息体 | 字段说明 |
+| --- | --- | --- |
+| `pay.success` | `PayResultDTO` 对象 | `status` 支付状态（1 支付中、2 失败、3 成功）；`msg` 结果说明；`bizOrderId` 业务订单号；`payOrderNo` 支付单号；`payChannel` 支付渠道；`successTime` 成功时间 |
+| `refund.status.change` | `RefundResultDTO` 对象 | `status` 退款状态（1 处理中、2 失败、3 成功）；`msg` 说明；`bizPayOrderId` 业务支付订单号；`bizRefundOrderId` 业务退款单号；`payOrderNo` 支付流水单号；`refundOrderNo` 退款交易单号；`payChannel`、`refundChannel` 分别为支付及退款渠道 |
+| `order.pay`、`order.refund` | `OrderBasicDTO` 对象 | `orderId` 订单 ID；`userId` 用户 ID；`courseIds` 课程 ID 数组；`finishTime` 完成时间 |
+| `course.up`、`course.down`、`course.expire`、`course.delete` | Long 标量 | 课程 ID，例如 `123`；不是包含课程字段的对象 |
+| `sign.in` | `SignInMessage` 对象 | `userId` 用户 ID；`points` 本次签到积分 |
+| `reply.new` | Long 标量 | 用户 ID；仓库内未发现有效生产端，格式依据消费者 |
+| `QA.times.changed` | `LikedTimesDTO` 数组 | 每项 `bizId` 为业务 ID，`likedTimes` 为当前点赞总数；当前统计链路发送批量快照 |
+| `coupon.receive` | `UserCouponDTO` 对象 | `receiveRequestId` 普通领券请求标识；`userId` 用户 ID；`couponId` 券 ID；`serialNum` 兑换码序列号，普通领券可为空 |
+| `sms.message` | `SmsInfoDTO` 对象 | `templateCode` 短信模板编码；`phones` 手机号集合；`templateParams` 模板参数键值对 |
+| `delay.order.query` | `OrderDelayQueryDTO` 对象 | `orderId` 订单 ID；`queryGeneration` 查询任务代次；`queryRound` 查询轮次；`delayMillis` 旧延迟链路的剩余延迟列表（毫秒）；代次和轮次均为空表示旧消息 |
+
+示例（字段值仅供理解，不代表实际业务数据）：
+
+```json
+{"orderId": 1001, "userId": 2001, "courseIds": [301, 302], "finishTime": "2026-11-07T10:00:00"}
+```
+
+```json
+[{"bizId": 101, "likedTimes": 8}, {"bizId": 102, "likedTimes": 3}]
+```
+
+```json
+{"templateCode": "login", "phones": ["13800000000"], "templateParams": {"code": "123456"}}
+```
+
+字段定义分别位于 `tj-pay/tj-pay-domain/.../dto/`、`tj-api/.../dto/`、`tj-learning/.../mq/msg/SignInMessage.java`、`tj-promotion/.../domain/dto/UserCouponDTO.java` 和 `tj-trade/.../domain/dto/OrderDelayQueryDTO.java`。同一 DTO 在不同发送分支中可只填充部分字段，消费端不应仅凭示例假定所有字段非空。
