@@ -32,7 +32,7 @@
 
 ## 部署前必须完成
 
-1. 执行 [建表脚本](sql/mq-consume-log.sql)，在 `tj_learning`、`tj_promotion` 各创建 `mq_consume_log`。脚本不会在应用启动时自动执行。
+1. 执行 [建表脚本](sql/mq-consume-log.sql)，在 `learning`、`promotion` 各创建 `mq_consume_log`。脚本不会在应用启动时自动执行。
 2. 若之前手工使用设计文档中的示例 DDL 建过同名表，先核对并迁移成此次脚本的结构，尤其是 `message_id`、`payload`、`created_at` 及主键。`CREATE TABLE IF NOT EXISTS` 不会改造旧表。
 3. 核对 MyBatis 与 JdbcTemplate 使用同一服务数据源和本地事务管理器；消费记录和业务表均使用 InnoDB。
 4. 促销生产端的新消息携带 `receiveRequestId`，同次发布重试必须沿用该值；消费者兼容旧消息，旧普通领券只按原 `messageId` 去重。旧消息缺少 messageId 时抛异常，不生成随机替代键。
@@ -65,7 +65,7 @@
 交易测试使用真实 MyBatis SQL、Spring 事务和 H2 MySQL 模式；公共执行器和监听器测试使用 H2 真实事务。没有依赖 Nacos 或外部 MQ 启动应用上下文。
 
 ```powershell
-mvn -B -ntp -pl 'tj-trade,tj-learning,tj-promotion' -am `
+mvn -B -ntp -pl 'trade,learning,promotion' -am `
   '-Dtest=MqIdempotentExecutorTest,LessonChangeListenerTest,LikeTimesChangeListenerTest,PromotionMqHandlerTest,PayServiceImplTest,TradeMqIdempotencyTest' `
   '-Dsurefire.failIfNoSpecifiedTests=false' test
 ```

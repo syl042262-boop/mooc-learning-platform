@@ -6,7 +6,7 @@
 
 ## 1. 范围与现状
 
-业务范围限定为 `tj-course`、`tj-trade`、`tj-learning`、`tj-promotion`、`tj-remark`。必要的公共组件放在 `tj-common`，共享消息字段放在 `tj-api`；不要求改造其他微服务的消费者或支付服务的生产逻辑。
+业务范围限定为 `course`、`trade`、`learning`、`promotion`、`remark`。必要的公共组件放在 `common`，共享消息字段放在 `api`；不要求改造其他微服务的消费者或支付服务的生产逻辑。
 
 在上述范围中发现 9 个有效的 `@RabbitListener` 入口：交易 3 个、学习 5 个、促销 1 个。课程、点赞服务未发现有效的 MQ 消费监听器，涉及它们的改动主要是消息标识、快照版本和可靠发送。
 
@@ -24,15 +24,15 @@
 
 代码依据：
 
-- `tj-trade/.../handler/PayMessageHandler.java`：33、43、53 行为三个入口。
-- `tj-trade/.../service/impl/OrderServiceImpl.java:426`：支付成功无条件更新并发送消息。
-- `tj-trade/.../service/impl/RefundApplyServiceImpl.java:handleRefundResult`：退款结果直接更新并发送退课消息。
-- `tj-trade/.../service/impl/PayServiceImpl.java:106`：延迟查单状态检查、重发及后续支付成功调用。
-- `tj-learning/.../mq/LessonChangeListener.java`、`LearningPointsListener.java`、`LikeTimesChangeListener.java`：五个有效入口，忽略已注释的旧监听器。
-- `tj-learning/.../service/impl/LearningLessonServiceImpl.java:74`、`:194`：直接加课、按用户课程退课。
-- `tj-learning/.../service/impl/PointsRecordServiceImpl.java:44`：积分落库后直接增加 Redis 分数。
-- `tj-promotion/.../service/impl/UserCouponLuaServiceImpl.java:178`：当前实际发券消费实现；旧 `UserCouponServiceImpl`、`UserCouponMqServiceImpl` 已注释。
-- `tj-remark/.../service/impl/LikedStatServiceImpl.java:30`：更新本地统计后发送总数快照。
+- `trade/.../handler/PayMessageHandler.java`：33、43、53 行为三个入口。
+- `trade/.../service/impl/OrderServiceImpl.java:426`：支付成功无条件更新并发送消息。
+- `trade/.../service/impl/RefundApplyServiceImpl.java:handleRefundResult`：退款结果直接更新并发送退课消息。
+- `trade/.../service/impl/PayServiceImpl.java:106`：延迟查单状态检查、重发及后续支付成功调用。
+- `learning/.../mq/LessonChangeListener.java`、`LearningPointsListener.java`、`LikeTimesChangeListener.java`：五个有效入口，忽略已注释的旧监听器。
+- `learning/.../service/impl/LearningLessonServiceImpl.java:74`、`:194`：直接加课、按用户课程退课。
+- `learning/.../service/impl/PointsRecordServiceImpl.java:44`：积分落库后直接增加 Redis 分数。
+- `promotion/.../service/impl/UserCouponLuaServiceImpl.java:178`：当前实际发券消费实现；旧 `UserCouponServiceImpl`、`UserCouponMqServiceImpl` 已注释。
+- `remark/.../service/impl/LikedStatServiceImpl.java:30`：更新本地统计后发送总数快照。
 
 ## 2. 事件标识：同时防止重复投递和重复发布
 
@@ -66,11 +66,11 @@
 - 优惠券不能统一以 `(userId, couponId)` 去重：当前有 `userLimit`，允许同一用户合法领取多张。
 - 退款不能只以 `orderId` 去重：一个订单可能包含多个课程并分别退款；退款结果也有 RUNNING、FAILED、SUCCESS 等不同阶段。
 
-支付和退款结果可直接用现有业务字段生成事件键，无须要求修改 `tj-pay`。
+支付和退款结果可直接用现有业务字段生成事件键，无须要求修改 `pay`。
 
 ## 3. 数据库消费记录与业务操作一起提交
 
-在 `tj_trade`、`tj_learning`、`tj_promotion` 各自数据库创建消费记录表，不使用一个跨库中心表。课程、点赞服务当前没有消费者，无须为了统一形式添加空的消费记录表。
+在 `trade`、`learning`、`promotion` 各自数据库创建消费记录表，不使用一个跨库中心表。课程、点赞服务当前没有消费者，无须为了统一形式添加空的消费记录表。
 
 以下为建议 DDL，实施时纳入项目实际使用的数据库迁移流程：
 
@@ -209,7 +209,7 @@ WHERE id = ? AND liked_version < ?;
 
 当前 `MqConfig` 已配置 `RepublishMessageRecoverer` 和各服务错误队列。核对 publisher confirm、mandatory/return 配置，考虑改用兼容当前依赖的 `RepublishMessageRecovererWithConfirms`；确认错误消息可靠移交后才允许结束原消费。[Spring AMQP 异常处理与重发恢复](https://docs.spring.io/spring-amqp/docs/2.4.x/reference/html/#exception-handling)
 
-实际 MQ 参数来自 Nacos `shared-mq.yaml`，仓库没有其内容，不能从代码确定当前 ACK 模式和重试参数。交易、促销的 `tj.mq.listener.retry.stateless` 在仓库中未找到绑定实现，应核对其是否生效以及标准 `spring.rabbitmq.listener.simple.retry.*` 配置；“有状态重试”管理重试过程，不等于业务幂等。
+实际 MQ 参数来自 Nacos `shared-mq.yaml`，仓库没有其内容，不能从代码确定当前 ACK 模式和重试参数。交易、促销的 `app.mq.listener.retry.stateless` 在仓库中未找到绑定实现，应核对其是否生效以及标准 `spring.rabbitmq.listener.simple.retry.*` 配置；“有状态重试”管理重试过程，不等于业务幂等。
 
 错误队列按服务汇总，回放须保留原交换机、routing key、`eventId`、业务字段和事件键；不能用新 ID 将原事件包装成另一操作。对同键但关键业务数据冲突的消息报警并隔离，禁止以普通重复掩盖。
 

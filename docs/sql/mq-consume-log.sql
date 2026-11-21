@@ -1,6 +1,6 @@
 -- 在部署新版消费者之前执行。只涉及当前存在数据库去重消费者的两个服务。
 -- 不自动执行此脚本，避免启动时隐式修改业务库。
-CREATE TABLE IF NOT EXISTS tj_learning.mq_consume_log (
+CREATE TABLE IF NOT EXISTS learning.mq_consume_log (
     consumer_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '稳定的逻辑消费者名称',
     event_key VARCHAR(192) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '业务事件键或旧消息ID',
     message_id VARCHAR(255) NULL COMMENT '原始AMQP消息ID',
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS tj_learning.mq_consume_log (
     KEY idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MQ成功消费记录';
 
-CREATE TABLE IF NOT EXISTS tj_promotion.mq_consume_log (
+CREATE TABLE IF NOT EXISTS promotion.mq_consume_log (
     consumer_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '稳定的逻辑消费者名称',
     event_key VARCHAR(192) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '业务事件键或旧消息ID',
     message_id VARCHAR(255) NULL COMMENT '原始AMQP消息ID',

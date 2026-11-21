@@ -1,4 +1,4 @@
--- 手工选择 tj_course、tj_trade、tj_remark，分别执行本脚本；应用不会自动建表。
+-- 手工选择 course、trade、remark，分别执行本脚本；应用不会自动建表。
 -- CREATE IF NOT EXISTS 不迁移旧表；已有同名表时需核对字段和唯一索引。
 CREATE TABLE IF NOT EXISTS mq_outbox (
     id BIGINT NOT NULL AUTO_INCREMENT,
